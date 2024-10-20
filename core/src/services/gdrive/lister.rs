@@ -20,19 +20,57 @@ use std::sync::Arc;
 use http::StatusCode;
 
 use super::core::GdriveCore;
+use super::core::GdriveFile;
 use super::core::GdriveFileList;
 use super::error::parse_error;
 use crate::raw::*;
 use crate::*;
+use bytes::Buf;
+use chrono::Utc;
 
 pub struct GdriveLister {
     path: String,
     core: Arc<GdriveCore>,
+    op: OpList,
 }
 
 impl GdriveLister {
-    pub fn new(path: String, core: Arc<GdriveCore>) -> Self {
-        Self { path, core }
+    pub fn new(path: String, core: Arc<GdriveCore>, op: OpList) -> Self {
+        Self { path, core, op }
+    }
+
+    async fn get_meta(
+        &self,
+        file_type: EntryMode,
+        normalized_path: &String,
+    ) -> Result<Metadata, Error> {
+        let mut meta = Metadata::new(file_type);
+        if self.op.metakey().contains(Metakey::ContentLength)
+            || self.op.metakey().contains(Metakey::LastModified)
+        {
+            let resp = self.core.gdrive_stat(&normalized_path).await?;
+
+            if resp.status() != StatusCode::OK {
+                return Err(parse_error(resp));
+            }
+
+            let bs = resp.into_body();
+            let gdrive_file: GdriveFile =
+                serde_json::from_reader(bs.reader()).map_err(new_json_deserialize_error)?;
+
+            if let Some(v) = gdrive_file.size {
+                meta.set_content_length(v.parse::<u64>().map_err(|e| {
+                    Error::new(ErrorKind::Unexpected, "parse content length").set_source(e)
+                })?);
+            }
+            if let Some(v) = gdrive_file.modified_time {
+                meta.set_last_modified(v.parse::<chrono::DateTime<Utc>>().map_err(|e| {
+                    Error::new(ErrorKind::Unexpected, "parse last modified time").set_source(e)
+                })?);
+            }
+        };
+
+        Ok(meta)
     }
 }
 
@@ -67,7 +105,8 @@ impl oio::PageList for GdriveLister {
         // Return self at the first page.
         if ctx.token.is_empty() && !ctx.done {
             let path = build_rel_path(&self.core.root, &self.path);
-            let e = oio::Entry::new(&path, Metadata::new(EntryMode::DIR));
+            let meta = self.get_meta(EntryMode::DIR, &path).await?;
+            let e = oio::Entry::new(&path, meta);
             ctx.entries.push_back(e);
         }
 
@@ -90,14 +129,22 @@ impl oio::PageList for GdriveLister {
                 EntryMode::FILE
             };
 
-            let root = &self.core.root;
             let path = format!("{}{}", &self.path, file.name);
-            let normalized_path = build_rel_path(root, &path);
 
             // Update path cache with list result.
-            self.core.path_cache.insert(&path, &file.id).await;
+            //
+            // Only cache non-existent entry. When Google Drive converts a format,
+            // for example, Microsoft Powerpoint, they will be two entries.
+            // These two entries have the same file id.
+            if let Ok(None) = self.core.path_cache.get(&path).await {
+                self.core.path_cache.insert(&path, &file.id).await;
+            }
 
-            let entry = oio::Entry::new(&normalized_path, Metadata::new(file_type));
+            let root = &self.core.root;
+            let normalized_path = build_rel_path(root, &path);
+            let meta = self.get_meta(file_type, &normalized_path).await?;
+
+            let entry = oio::Entry::new(&normalized_path, meta);
             ctx.entries.push_back(entry);
         }
 
