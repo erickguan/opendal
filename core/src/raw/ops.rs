@@ -107,6 +107,8 @@ pub struct OpList {
     ///
     /// Default to `false`
     version: bool,
+    /// Executor for concurrent list operations
+    executor: Option<Executor>,
 }
 
 impl Default for OpList {
@@ -119,6 +121,7 @@ impl Default for OpList {
             metakey: Metakey::Mode.into(),
             concurrent: 1,
             version: false,
+            executor: None,
         }
     }
 }
@@ -191,6 +194,17 @@ impl OpList {
     /// Get the concurrent of list operation.
     pub fn concurrent(&self) -> usize {
         self.concurrent
+    }
+
+    /// Get the executor from option
+    pub fn executor(&self) -> Option<&Executor> {
+        self.executor.as_ref()
+    }
+
+    /// Set the executor of the option
+    pub fn with_executor(mut self, executor: Executor) -> Self {
+        self.executor = Some(executor);
+        self
     }
 
     /// Change the version of this list operation

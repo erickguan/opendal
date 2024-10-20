@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 
+use flagset::FlagSet;
 use http::StatusCode;
 
 use super::core::GdriveCore;
@@ -34,43 +35,51 @@ pub struct GdriveLister {
     op: OpList,
 }
 
+struct GdriveStatHandle {
+    core: Arc<GdriveCore>,
+    metakey: FlagSet<Metakey>,
+    file_type: EntryMode,
+    path: String,
+}
+
+async fn get_meta(
+    core: Arc<GdriveCore>,
+    file_type: EntryMode,
+    metakey: FlagSet<Metakey>,
+    path: &String,
+) -> Result<Metadata, Error> {
+    let mut meta = Metadata::new(file_type);
+    if metakey.contains(Metakey::ContentLength)
+        || metakey.contains(Metakey::LastModified)
+    {
+        let resp = core.gdrive_stat(&path).await?;
+
+        if resp.status() != StatusCode::OK {
+            return Err(parse_error(resp));
+        }
+
+        let bs = resp.into_body();
+        let gdrive_file: GdriveFile =
+            serde_json::from_reader(bs.reader()).map_err(new_json_deserialize_error)?;
+
+        if let Some(v) = gdrive_file.size {
+            meta.set_content_length(v.parse::<u64>().map_err(|e| {
+                Error::new(ErrorKind::Unexpected, "parse content length").set_source(e)
+            })?);
+        }
+        if let Some(v) = gdrive_file.modified_time {
+            meta.set_last_modified(v.parse::<chrono::DateTime<Utc>>().map_err(|e| {
+                Error::new(ErrorKind::Unexpected, "parse last modified time").set_source(e)
+            })?);
+        }
+    };
+
+    Ok(meta)
+}
+
 impl GdriveLister {
     pub fn new(path: String, core: Arc<GdriveCore>, op: OpList) -> Self {
         Self { path, core, op }
-    }
-
-    async fn get_meta(
-        &self,
-        file_type: EntryMode,
-        normalized_path: &String,
-    ) -> Result<Metadata, Error> {
-        let mut meta = Metadata::new(file_type);
-        if self.op.metakey().contains(Metakey::ContentLength)
-            || self.op.metakey().contains(Metakey::LastModified)
-        {
-            let resp = self.core.gdrive_stat(&normalized_path).await?;
-
-            if resp.status() != StatusCode::OK {
-                return Err(parse_error(resp));
-            }
-
-            let bs = resp.into_body();
-            let gdrive_file: GdriveFile =
-                serde_json::from_reader(bs.reader()).map_err(new_json_deserialize_error)?;
-
-            if let Some(v) = gdrive_file.size {
-                meta.set_content_length(v.parse::<u64>().map_err(|e| {
-                    Error::new(ErrorKind::Unexpected, "parse content length").set_source(e)
-                })?);
-            }
-            if let Some(v) = gdrive_file.modified_time {
-                meta.set_last_modified(v.parse::<chrono::DateTime<Utc>>().map_err(|e| {
-                    Error::new(ErrorKind::Unexpected, "parse last modified time").set_source(e)
-                })?);
-            }
-        };
-
-        Ok(meta)
     }
 }
 
@@ -105,7 +114,7 @@ impl oio::PageList for GdriveLister {
         // Return self at the first page.
         if ctx.token.is_empty() && !ctx.done {
             let path = build_rel_path(&self.core.root, &self.path);
-            let meta = self.get_meta(EntryMode::DIR, &path).await?;
+            let meta = get_meta(self.core.clone(), EntryMode::DIR, self.op.metakey(), &path).await?;
             let e = oio::Entry::new(&path, meta);
             ctx.entries.push_back(e);
         }
@@ -119,6 +128,24 @@ impl oio::PageList for GdriveLister {
             ctx.done = true;
         }
 
+        let executor = self.op.executor().cloned().unwrap_or_default();
+        let mut tasks = ConcurrentTasks::new(
+            executor,
+            self.op.concurrent(),
+            |stat_handle: GdriveStatHandle| {
+            Box::pin({
+                async move {
+                    match get_meta(stat_handle.core.clone(), stat_handle.file_type, stat_handle.metakey, &stat_handle.path).await {
+                        Ok(meta) => {
+                            let entry = oio::Entry::new(stat_handle.path.as_str(), meta);
+                            (stat_handle, Ok(entry))
+                        },
+                        Err(err) => (stat_handle, Err(err)),
+                    }
+                }
+            })
+        });
+
         for mut file in decoded_response.files {
             let file_type = if file.mime_type.as_str() == "application/vnd.google-apps.folder" {
                 if !file.name.ends_with('/') {
@@ -130,7 +157,7 @@ impl oio::PageList for GdriveLister {
             };
 
             let path = format!("{}{}", &self.path, file.name);
-
+            
             // Update path cache with list result.
             //
             // Only cache non-existent entry. When Google Drive converts a format,
@@ -142,10 +169,28 @@ impl oio::PageList for GdriveLister {
 
             let root = &self.core.root;
             let normalized_path = build_rel_path(root, &path);
-            let meta = self.get_meta(file_type, &normalized_path).await?;
+            let request = GdriveStatHandle {
+                core: self.core.clone(),
+                metakey: self.op.metakey(),
+                file_type,
+                path: normalized_path
+            };
 
-            let entry = oio::Entry::new(&normalized_path, meta);
-            ctx.entries.push_back(entry);
+            tasks.execute(request).await.map_err(|err| {
+                Error::new(
+                    ErrorKind::Unexpected,
+                    "executor fails to execute the task",
+                )
+                .set_source(err)
+            });
+        }
+
+        loop {
+            match tasks.next().await.transpose() {
+                Ok(Some(entry)) => ctx.entries.push_back(entry),
+                Ok(None) => break,
+                Err(_) => continue,
+            }
         }
 
         Ok(())
