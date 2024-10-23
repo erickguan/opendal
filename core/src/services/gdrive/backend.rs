@@ -88,22 +88,33 @@ impl Access for GdriveBackend {
         let gdrive_file: GdriveFile =
             serde_json::from_reader(bs.reader()).map_err(new_json_deserialize_error)?;
 
-        if gdrive_file.mime_type == "application/vnd.google-apps.folder" {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        };
+        let file_type =
+            if gdrive_file.mime_type.as_str() == "application/vnd.google-apps.folder" {
+                EntryMode::DIR
+            } else {
+                EntryMode::FILE
+            };
 
-        let mut meta = Metadata::new(EntryMode::FILE);
+        println!("-3- {}: {:?}", path, gdrive_file);
+
+        let mut meta = Metadata::new(file_type);
         if let Some(v) = gdrive_file.size {
             meta = meta.with_content_length(v.parse::<u64>().map_err(|e| {
                 Error::new(ErrorKind::Unexpected, "parse content length").set_source(e)
             })?);
+            println!("-4- {}: {:?} {:?}", path, meta.content_length(), v);
         }
         if let Some(v) = gdrive_file.modified_time {
             meta = meta.with_last_modified(v.parse::<chrono::DateTime<Utc>>().map_err(|e| {
                 Error::new(ErrorKind::Unexpected, "parse last modified time").set_source(e)
             })?);
+
+            println!("-5- {}: {:?} {:?}", path, meta.last_modified(), v);
         }
-        Ok(RpStat::new(meta))
+
+        let t = RpStat::new(meta.clone());
+        println!("-6- {}: {:?}", path, t);
+        Ok(t)
     }
 
     async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
@@ -153,9 +164,9 @@ impl Access for GdriveBackend {
         Ok(RpDelete::default())
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+    async fn list(&self, path: &str, _args: OpList) -> Result<(RpList, Self::Lister)> {
         let path = build_abs_path(&self.core.root, path);
-        let l = GdriveLister::new(path, self.core.clone(), args);
+        let l = GdriveLister::new(path, self.core.clone());
         Ok((RpList::default(), oio::PageLister::new(l)))
     }
 

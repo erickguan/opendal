@@ -20,38 +20,19 @@ use std::sync::Arc;
 use http::StatusCode;
 
 use super::core::GdriveCore;
-use super::core::GdriveFile;
 use super::core::GdriveFileList;
 use super::error::parse_error;
 use crate::raw::*;
 use crate::*;
-use bytes::Buf;
-use chrono::Utc;
 
 pub struct GdriveLister {
     path: String,
     core: Arc<GdriveCore>,
-    op: OpList,
-}
-
-async fn stat_file(core: Arc<GdriveCore>, path: &str) -> Result<GdriveFile, Error> {
-    // reuse gdrive_stat which resolves `file_id` by path via core's `path_cache`.
-    let resp = core.gdrive_stat(path).await?;
-
-    if resp.status() != StatusCode::OK {
-        return Err(parse_error(resp));
-    }
-
-    let bs = resp.into_body();
-    let gdrive_file: GdriveFile =
-        serde_json::from_reader(bs.reader()).map_err(new_json_deserialize_error)?;
-
-    Ok(gdrive_file)
 }
 
 impl GdriveLister {
-    pub fn new(path: String, core: Arc<GdriveCore>, op: OpList) -> Self {
-        Self { path, core, op }
+    pub fn new(path: String, core: Arc<GdriveCore>) -> Self {
+        Self { path, core }
     }
 }
 
@@ -83,28 +64,11 @@ impl oio::PageList for GdriveLister {
             return Ok(());
         }
 
-        let stat_file_metadata = !self
-            .op
-            .metakey()
-            .is_disjoint(Metakey::ContentLength | Metakey::LastModified);
-
         // Return self at the first page.
         if ctx.token.is_empty() && !ctx.done {
             let path = build_rel_path(&self.core.root, &self.path);
-            let mut metadata = Metadata::new(EntryMode::DIR);
-            if stat_file_metadata {
-                let gdrive_file = stat_file(self.core.clone(), &path).await?;
-                if let Some(v) = gdrive_file.size {
-                    metadata.set_content_length(v.parse::<u64>().map_err(|e| {
-                        Error::new(ErrorKind::Unexpected, "parse content length").set_source(e)
-                    })?);
-                }
-                if let Some(v) = gdrive_file.modified_time {
-                    metadata.set_last_modified(v.parse::<chrono::DateTime<Utc>>().map_err(|e| {
-                        Error::new(ErrorKind::Unexpected, "parse last modified time").set_source(e)
-                    })?);
-                }
-            }
+            // reset metakey so that PageList will fetch metadata based on the operator metakey
+            let metadata = Metadata::new(EntryMode::DIR).with_metakey(Metakey::Mode);
             let e = oio::Entry::new(&path, metadata);
             ctx.entries.push_back(e);
         }
@@ -141,20 +105,8 @@ impl oio::PageList for GdriveLister {
 
             let root = &self.core.root;
             let normalized_path = build_rel_path(root, &path);
-            let mut metadata = Metadata::new(file_type);
-            if stat_file_metadata {
-                let gdrive_file = stat_file(self.core.clone(), &normalized_path).await?;
-                if let Some(v) = gdrive_file.size {
-                    metadata.set_content_length(v.parse::<u64>().map_err(|e| {
-                        Error::new(ErrorKind::Unexpected, "parse content length").set_source(e)
-                    })?);
-                }
-                if let Some(v) = gdrive_file.modified_time {
-                    metadata.set_last_modified(v.parse::<chrono::DateTime<Utc>>().map_err(|e| {
-                        Error::new(ErrorKind::Unexpected, "parse last modified time").set_source(e)
-                    })?);
-                }
-            }
+            // reset metakey so that PageList will fetch metadata based on the operator metakey
+            let metadata = Metadata::new(file_type).with_metakey(Metakey::Mode);
 
             let entry = oio::Entry::new(&normalized_path, metadata);
             ctx.entries.push_back(entry);

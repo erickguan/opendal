@@ -172,6 +172,7 @@ impl Stream for Lister {
                     match entry {
                         Ok(Some(oe)) => {
                             let (path, metadata) = oe.into_entry().into_parts();
+                            println!("-1- {}: {}, {:?} - {:?}", path, metadata.contains_metakey(self.required_metakey), metadata, self.required_metakey);
                             if metadata.contains_metakey(self.required_metakey) {
                                 self.tasks
                                     .push_back(StatTask::Known(Some((path, metadata))));
@@ -179,6 +180,7 @@ impl Stream for Lister {
                                 let acc = self.acc.clone();
                                 let fut = async move {
                                     let res = acc.stat(&path, OpStat::default()).await;
+                                    println!("-2- {}: {:?}", path, res);
                                     (path, res.map(|rp| rp.into_metadata()))
                                 };
                                 self.tasks.push_back(StatTask::Stating(Box::pin(fut)));
@@ -199,6 +201,7 @@ impl Stream for Lister {
         // Try to poll tasks
         if let Some((path, rp)) = ready!(self.tasks.poll_next_unpin(cx)) {
             let metadata = rp?;
+            println!("-7- {}: {:?}", path, metadata);
             return Poll::Ready(Some(Ok(Entry::new(path, metadata))));
         }
 
