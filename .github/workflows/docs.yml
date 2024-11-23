@@ -163,6 +163,32 @@ jobs:
           name: python-docs
           path: ./bindings/python/docs
 
+  build-ruby-doc:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: actions/setup-ruby@v1
+        with:
+          # The action reads Ruby version from `.ruby-version`
+          working-directory: bindings/ruby
+          bundler-cache: true
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup
+
+      - name: Build Docs
+        working-directory: bindings/ruby
+        run: rdoc --main README.md -o doc lib/generated_doc.rb
+
+      - name: Upload docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby-docs
+          path: ./bindings/ruby/docs
+
   build-c-doc:
     runs-on: ubuntu-latest
 
@@ -540,6 +566,12 @@ jobs:
         with:
           name: python-docs
           path: ./website/static/docs/python
+
+      - name: Download Ruby docs
+        uses: actions/download-artifact@v4
+        with:
+          name: ruby-docs
+          path: ./website/static/docs/ruby
 
       - name: Download java docs
         uses: actions/download-artifact@v3

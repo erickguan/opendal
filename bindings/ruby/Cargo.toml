@@ -29,7 +29,6 @@ rust-version = "1.75"
 
 [lib]
 crate-type = ["cdylib"]
-doc = false
 name = "opendal_ruby"
 
 [dependencies]
