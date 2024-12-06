@@ -35,7 +35,7 @@ use crate::*;
 // - IO
 // - StringIO
 //
-// `Io` is not exactly an `IO` but is unidirectional (either `Reader` or `Writer`).
+// `Io` is not exactly an `IO` but is unidirectional (either a reader or a writer`).
 // TODO: implement encoding.
 #[magnus::wrap(class = "OpenDAL::IO", free_immediately, size)]
 pub struct Io(RefCell<FileState>);
@@ -51,7 +51,7 @@ pub fn format_io_error(err: std::io::Error) -> Error {
 }
 
 impl Io {
-    /// Creates a new `OpenDAL::IO` object in Ruby.
+    /// Creates a new `OpenDAL::IO` object.
     ///
     // @param ruby Ruby handle, required for exception handling.
     // @param operator OpenDAL operator for file operations.
@@ -101,7 +101,7 @@ impl Io {
         }
     }
 
-    /// Enables binary mode for the stream.
+    /// Sets the streams to binary mode.
     fn binary_mode(ruby: &Ruby, rb_self: &Self) -> Result<(), Error> {
         let mut cell = rb_self.0.borrow_mut();
         match &mut *cell {
@@ -117,7 +117,7 @@ impl Io {
         }
     }
 
-    /// Returns if the stream is on binary mode.
+    /// Returns whether the streams are on binary mode.
     fn is_binary_mode(ruby: &Ruby, rb_self: &Self) -> Result<bool, Error> {
         match *rb_self.0.borrow() {
             FileState::Reader(_, is_binary_mode) => Ok(is_binary_mode),
@@ -126,7 +126,7 @@ impl Io {
         }
     }
 
-    /// Checks if the stream is in binary mode.
+    /// Closes both the read and write streams.
     fn close(&self) -> Result<(), Error> {
         // skips closing reader because `StdReader` doesn't have `close()`.
         let mut cell = self.0.borrow_mut();
@@ -137,13 +137,14 @@ impl Io {
         Ok(())
     }
 
-    /// Closes the stream and transitions the state to `Closed`.
+    /// Closes the read stream.
     fn close_read(&self) -> Result<(), Error> {
+        // transits to the `Closed` state
         *self.0.borrow_mut() = FileState::Closed;
         Ok(())
     }
 
-    /// Reads data from the stream.
+    /// Closes the write stream.
     fn close_write(&self) -> Result<(), Error> {
         let mut cell = self.0.borrow_mut();
         if let FileState::Writer(writer, _) = &mut *cell {
@@ -153,14 +154,17 @@ impl Io {
         Ok(())
     }
 
+    /// Returns whether both the read and write streams are closed.
     fn is_closed(&self) -> Result<bool, Error> {
         Ok(matches!(*self.0.borrow(), FileState::Closed))
     }
 
+    /// Returns whether the read stream is closed.
     fn is_closed_read(&self) -> Result<bool, Error> {
         Ok(!matches!(*self.0.borrow(), FileState::Reader(_, _)))
     }
 
+    /// Returns whether write stream is closed.
     fn is_closed_write(&self) -> Result<bool, Error> {
         Ok(!matches!(*self.0.borrow(), FileState::Writer(_, _)))
     }
@@ -243,7 +247,7 @@ impl Io {
     /// Moves the file position based on the offset and whence.
     ///
     /// @param offset The position offset.
-    /// @param whence The reference point:
+    /// @param whence Specifies the reference point:
     ///   - 0 = IO:SEEK_SET (Start)
     ///   - 1 = IO:SEEK_CUR (Current position)
     ///   - 2 = IO:SEEK_END (From the end)
@@ -300,7 +304,7 @@ impl Io {
 
 /// Defines the `OpenDAL::IO` class in the given Ruby module and binds its methods.
 ///
-/// This function uses Magnus's built-in Ruby thread-safety features to define the
+/// This function uses Magnus's Ruby thread-safety mechanisms to define the
 /// `OpenDAL::IO` class and its methods in the provided Ruby module (`gem_module`).
 ///
 /// # Ruby Object Lifetime and Safety

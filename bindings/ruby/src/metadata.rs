@@ -58,12 +58,12 @@ impl Metadata {
         self.0.etag()
     }
 
-    /// Returns `True` if this is a file.
+    /// Returns if this is a file.
     pub fn is_file(&self) -> bool {
         self.0.is_file()
     }
 
-    /// Returns `True` if this is a directory.
+    /// Returns if this is a directory.
     pub fn is_dir(&self) -> bool {
         self.0.is_dir()
     }
